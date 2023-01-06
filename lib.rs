@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use std::{collections::btree_map::{BTreeMap, Entry}, time::Duration, future::Future};
+use std::{collections::btree_map::{BTreeMap, Entry as BTreeMapEntry}, time::Duration, future::Future};
 use async_channel::{Sender as Tx, Receiver as Rx, unbounded as channel};
 use async_oneshot::{Sender as OneTx, Receiver as OneRx, oneshot};
 use async_io::Timer;
@@ -66,18 +66,18 @@ impl<T> Reg<T> {
         Reg { tx: BTreeMap::new() }
     }
 
-    fn spawn_checker(&mut self, part: PartNo) -> Option<Rx<(RawAtom, OneTx<T>)>> {
+    fn spawn(&mut self, part: PartNo) -> Option<Rx<(RawAtom, OneTx<T>)>> {
         match self.tx.entry(part) {
-            Entry::Vacant(entry) => {
+            BTreeMapEntry::Occupied(_) => None,
+            BTreeMapEntry::Vacant(entry) => {
                 let (tx, rx) = channel();
                 entry.insert(tx);
                 Some(rx)
             },
-            Entry::Occupied(_) => None,
         }
     }
 
-    async fn send_recv(&self, raw: RawData) -> Vec<WithPartNo<T>> {
+    async fn send_recv_ordered(&self, raw: RawData) -> Vec<WithPartNo<T>> {
         let mut res = Vec::with_capacity(raw.len());
         for WithPartNo { part, data } in raw {
             let tx = self.tx.get(&part).unwrap();
