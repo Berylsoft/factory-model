@@ -1,10 +1,20 @@
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code)]
 
-use std::{collections::btree_map::{BTreeMap, Entry as BTreeMapEntry}, time::Duration, future::Future};
+use std::{collections::btree_map::{BTreeMap, Entry as BTreeMapEntry}, time::Duration};
 use async_channel::{Sender as Tx, Receiver as Rx, unbounded as channel};
-use async_oneshot::{Sender as OneTx, Receiver as OneRx, oneshot};
+use async_oneshot::{Sender as OneTx, oneshot};
 use async_io::Timer;
 use async_global_executor::{spawn, block_on};
+
+async fn send_recv<Req, Res>(tx: &Tx<(Req, OneTx<Res>)>, req: Req) -> Res {
+    let (res_tx, res_rx) = oneshot();
+    tx.send((req, res_tx)).await.unwrap();
+    res_rx.await.unwrap()
+}
+
+fn respond<Req, Res>((req, mut res_tx): (Req, OneTx<Res>), responder: fn(Req) -> Res) {
+    res_tx.send(responder(req)).unwrap()
+}
 
 type DealNo = u64;
 type PartNo = u64;
@@ -29,10 +39,25 @@ struct WithPartNo<T> {
 
 type RawData = Vec<WithPartNo<RawAtom>>;
 
+type CheckResult = Option<CheckError>;
+
 #[derive(Debug, Clone)]
-enum CheckResult {
-    Ok,
-    Failed,
+struct CheckError;
+
+#[derive(Debug, Clone)]
+struct CombinedCheckError {
+    error: CheckError,
+    pos: CheckErrorPos,
+}
+
+#[derive(Debug, Clone)]
+enum CheckErrorPos {
+    All,
+    Part(PartNo),
+}
+
+fn combine_result(_all: Option<CheckError>, _parts: Vec<WithPartNo<Option<CheckError>>>) -> Option<CombinedCheckError> {
+    None
 }
 
 type DerivedData = Vec<WithPartNo<DerivedAtom>>;
@@ -40,11 +65,11 @@ type DerivedData = Vec<WithPartNo<DerivedAtom>>;
 struct Factroy {
     input_rx: Rx<WithDealNo<RawData>>,
     checker_tx: Tx<(RawData, OneTx<CheckResult>)>,
-    checkers: Reg<CheckResult>,
-    check_result_tx: Tx<WithDealNo<CheckResult>>,
+    checkers_reg: Reg<CheckResult>,
+    check_result_tx: Tx<WithDealNo<Option<CombinedCheckError>>>,
     raw_output_tx: Tx<WithDealNo<RawData>>,
     all_deriver_tx: Tx<(RawData, OneTx<DerivedData>)>,
-    derivers: Reg<DerivedAtom>,
+    derivers_reg: Reg<DerivedAtom>,
     derived_output_tx: Tx<WithDealNo<DerivedData>>,
 }
 
@@ -52,7 +77,7 @@ struct InitPorts {
     input_tx: Tx<WithDealNo<RawData>>,
     checker_rx: Rx<(RawData, OneTx<CheckResult>)>,
     all_deriver_rx: Rx<(RawData, OneTx<DerivedData>)>,
-    check_result_rx: Rx<WithDealNo<CheckResult>>,
+    check_result_rx: Rx<WithDealNo<Option<CombinedCheckError>>>,
     raw_output_rx: Rx<WithDealNo<RawData>>,
     derived_output_rx: Rx<WithDealNo<DerivedData>>,
 }
@@ -66,13 +91,13 @@ impl<T> Reg<T> {
         Reg { tx: BTreeMap::new() }
     }
 
-    fn spawn(&mut self, part: PartNo) -> Option<Rx<(RawAtom, OneTx<T>)>> {
+    fn reg(&mut self, part: PartNo) -> Rx<(RawAtom, OneTx<T>)> {
         match self.tx.entry(part) {
-            BTreeMapEntry::Occupied(_) => None,
+            BTreeMapEntry::Occupied(_) => unreachable!(),
             BTreeMapEntry::Vacant(entry) => {
                 let (tx, rx) = channel();
                 entry.insert(tx);
-                Some(rx)
+                rx
             },
         }
     }
@@ -80,10 +105,7 @@ impl<T> Reg<T> {
     async fn send_recv_ordered(&self, raw: RawData) -> Vec<WithPartNo<T>> {
         let mut res = Vec::with_capacity(raw.len());
         for WithPartNo { part, data } in raw {
-            let tx = self.tx.get(&part).unwrap();
-            let (res_tx, res_rx) = oneshot();
-            tx.send((data, res_tx)).await.unwrap();
-            res.push(WithPartNo { part, data: res_rx.await.unwrap() });
+            res.push(WithPartNo { part, data: send_recv(self.tx.get(&part).unwrap(), data).await });
         }
         res
     }
@@ -98,15 +120,18 @@ impl Factroy {
         let (all_deriver_tx, all_deriver_rx) = channel();
         let (derived_output_tx, derived_output_rx) = channel();
 
+        let checkers_reg = Reg::new();
+        let derivers_reg = Reg::new();
+
         (
             Factroy {
                 input_rx,
                 checker_tx,
-                checkers: Reg::new(),
+                checkers_reg,
                 check_result_tx,
                 raw_output_tx,
                 all_deriver_tx,
-                derivers: Reg::new(),
+                derivers_reg,
                 derived_output_tx,
             },
             InitPorts {
@@ -120,25 +145,38 @@ impl Factroy {
         )
     }
 
+    async fn reg(&mut self) {
+        let checker0 = self.checkers_reg.reg(0);
+        spawn(async move {
+            println!("started checker0_loop");
+            while let Ok(req) = checker0.recv().await {
+                println!("checker0 recv: {:?}", req.0);
+                respond(req, |_| None)
+            }
+        }).detach();
+
+        let deriver0 = self.derivers_reg.reg(0);
+        spawn(async move {
+            println!("started deriver0_loop");
+            while let Ok(req) = deriver0.recv().await {
+                println!("deriver0 recv: {:?}", req.0);
+                respond(req, |_| DerivedAtom);
+            }
+        }).detach();
+    }
+
     async fn exec(self) {
         while let Ok(input) = self.input_rx.recv().await {
             println!("recv input {:?}", input);
             let WithDealNo { deal, data } = input;
-            let check_result = {
-                let (res_tx, res_rx) = oneshot();
-                self.checker_tx.send((data.clone(), res_tx)).await.unwrap();
-                res_rx.await.unwrap()
-            };
+            let check_result_all = send_recv(&self.checker_tx, data.clone()).await;
+            let check_result_parts = self.checkers_reg.send_recv_ordered(data.clone()).await;
+            let check_result = combine_result(check_result_all, check_result_parts);
             self.check_result_tx.send(WithDealNo { deal, data: check_result.clone() }).await.unwrap();
-            if let CheckResult::Failed = check_result {
-                continue;
-            }
+            if let Some(_) = check_result { continue; }
             self.raw_output_tx.send(WithDealNo { deal, data: data.clone() }).await.unwrap();
-            let derived = {
-                let (res_tx, res_rx) = oneshot();
-                self.all_deriver_tx.send((data.clone(), res_tx)).await.unwrap();
-                res_rx.await.unwrap()
-            };
+            let _derived = send_recv(&self.all_deriver_tx, data.clone()).await;
+            let derived = self.derivers_reg.send_recv_ordered(data.clone()).await;
             self.derived_output_tx.send(WithDealNo { deal, data: derived }).await.unwrap();
         }
     }
@@ -161,19 +199,17 @@ impl InitPorts {
 
         spawn(async move {
             println!("started checker_loop");
-            while let Ok((data, mut res_tx)) = self.checker_rx.recv().await {
-                println!("checker recv: {:?}", data);
-                let res = CheckResult::Ok;
-                res_tx.send(res).unwrap();
+            while let Ok(req) = self.checker_rx.recv().await {
+                println!("checker recv: {:?}", req.0);
+                respond(req, |_| None)
             }
         }).detach();
 
         spawn(async move {
             println!("started all_deriver_loop");
-            while let Ok((data, mut res_tx)) = self.all_deriver_rx.recv().await {
-                println!("all deriver recv: {:?}", data);
-                let res = vec![WithPartNo { part: 0, data: DerivedAtom }];
-                res_tx.send(res).unwrap();
+            while let Ok(req) = self.all_deriver_rx.recv().await {
+                println!("all deriver recv: {:?}", req.0);
+                respond(req, |_| vec![WithPartNo { part: 0, data: DerivedAtom }]);
             }
         }).detach();
 
@@ -203,9 +239,10 @@ impl InitPorts {
 fn main() {
     block_on(async {
         println!("started main_loop");
-        let (factory, ports) = Factroy::new();
+        let (mut factory, ports) = Factroy::new();
         ports.debug().await;
         println!("start to process");
+        factory.reg().await;
         factory.exec().await;
     });
 }
