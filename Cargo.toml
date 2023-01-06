@@ -1,0 +1,17 @@
+[package]
+name = "factory"
+version = "0.0.1"
+edition = "2021"
+authors = ["stackinspector"]
+license = "MPL-2.0"
+
+[[bin]]
+name = "factory"
+path = "lib.rs"
+
+[dependencies]
+foundations = { path = "../../Berylsoft/foundations", default-features = false, features = [] }
+async-channel = "1"
+async-oneshot = "0.5"
+async-io = "1"
+async-global-executor = "2"
