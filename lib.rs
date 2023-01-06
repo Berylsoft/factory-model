@@ -21,7 +21,13 @@ struct WithDealNo<T> {
     data: T,
 }
 
-type RawData = Vec<(PartNo, RawAtom)>;
+#[derive(Debug, Clone)]
+struct WithPartNo<T> {
+    part: PartNo,
+    data: T,
+}
+
+type RawData = Vec<WithPartNo<RawAtom>>;
 
 #[derive(Debug, Clone)]
 enum CheckResult {
@@ -29,16 +35,16 @@ enum CheckResult {
     Failed,
 }
 
-type DerivedData = Vec<(PartNo, DerivedAtom)>;
+type DerivedData = Vec<WithPartNo<DerivedAtom>>;
 
 struct Factroy {
     input: Rx<WithDealNo<RawData>>,
     checker: Tx<(RawData, OneTx<CheckResult>)>,
-    // checkers: BTreeMap<PartNo, Tx<(RawAtom, Tx<CheckResultInner>)>>,
+    checkers: BTreeMap<PartNo, Tx<(RawAtom, Tx<CheckResult>)>>,
     check_result: Tx<WithDealNo<CheckResult>>,
     raw_output: Tx<WithDealNo<RawData>>,
     all_deriver: Tx<(RawData, OneTx<DerivedData>)>,
-    // derivers: BTreeMap<PartNo, Tx<(RawAtom, Tx<DerivedAtom>)>>,
+    derivers: BTreeMap<PartNo, Tx<(RawAtom, Tx<DerivedAtom>)>>,
     derive_output: Tx<WithDealNo<DerivedData>>
 }
 
@@ -51,12 +57,15 @@ fn main() {
         let (raw_output_tx, raw_output_rx) = channel();
         let (all_deriver_tx, all_deriver_rx) = channel();
         let (derived_output_tx, derived_output_rx) = channel();
+
         let _self = Factroy {
             input: input_rx,
             checker: checker_tx,
+            checkers: BTreeMap::new(),
             check_result: check_result_tx,
             raw_output: raw_output_tx,
             all_deriver: all_deriver_tx,
+            derivers: BTreeMap::new(),
             derive_output: derived_output_tx,
         };
 
@@ -64,7 +73,7 @@ fn main() {
             println!("started input_endpoint_loop");
             let mut deal = 0;
             loop {
-                let data = vec![(0, RawAtom)];
+                let data = vec![WithPartNo { part: 0, data: RawAtom }];
                 let raw_data = WithDealNo { deal, data };
                 println!("input: {:?}", raw_data);
                 input_tx.send(raw_data).await.unwrap();
@@ -86,7 +95,7 @@ fn main() {
             println!("started all_deriver_loop");
             while let Ok((data, mut res_tx)) = all_deriver_rx.recv().await {
                 println!("all deriver recv: {:?}", data);
-                let res = vec![(0, DerivedAtom)];
+                let res = vec![WithPartNo { part: 0, data: DerivedAtom }];
                 res_tx.send(res).unwrap();
             }
         }).detach();
