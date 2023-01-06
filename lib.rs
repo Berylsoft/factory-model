@@ -72,14 +72,6 @@ struct Factroy {
     derived_output_tx: Tx<WithDealNo<DerivedData>>,
 }
 
-struct InitPorts {
-    input_tx: Tx<WithDealNo<RawData>>,
-    checker_rx: Rx<(RawData, OneTx<CheckResult>)>,
-    check_result_rx: Rx<WithDealNo<Option<CombinedCheckError>>>,
-    raw_output_rx: Rx<WithDealNo<RawData>>,
-    derived_output_rx: Rx<WithDealNo<DerivedData>>,
-}
-
 struct Reg<T> {
     tx: BTreeMap<PartNo, Tx<(RawAtom, OneTx<T>)>>,
 }
@@ -110,38 +102,40 @@ impl<T> Reg<T> {
 }
 
 impl Factroy {
-    fn new() -> (Factroy, InitPorts) {
+    fn new() -> Factroy {
+        println!("started main_loop");
+
         let (input_tx, input_rx) = channel();
-        let (checker_tx, checker_rx) = channel();
+        let (checker_tx, checker_rx) = channel::<(Vec<WithPartNo<RawAtom>>, OneTx<Option<CheckError>>)>();
         let (check_result_tx, check_result_rx) = channel();
         let (raw_output_tx, raw_output_rx) = channel();
         let (derived_output_tx, derived_output_rx) = channel();
 
-        let checkers_reg = Reg::new();
-        let derivers_reg = Reg::new();
+        let mut checkers_reg = Reg::new();
+        let mut derivers_reg = Reg::new();
 
-        (
-            Factroy {
-                input_rx,
-                checker_tx,
-                checkers_reg,
-                check_result_tx,
-                raw_output_tx,
-                derivers_reg,
-                derived_output_tx,
-            },
-            InitPorts {
-                input_tx,
-                checker_rx,
-                check_result_rx,
-                raw_output_rx,
-                derived_output_rx,
-            },
-        )
-    }
+        spawn(async move {
+            println!("started input_endpoint_loop");
+            let mut deal = 0;
+            loop {
+                let data = vec![WithPartNo { part: 0, data: RawAtom }];
+                let raw_data = WithDealNo { deal, data };
+                println!("input: {:?}", raw_data);
+                input_tx.send(raw_data).await.unwrap();
+                deal += 1;
+                Timer::after(Duration::from_secs(5)).await;
+            }
+        }).detach();
 
-    async fn reg(&mut self) {
-        let checker0 = self.checkers_reg.reg(0);
+        spawn(async move {
+            println!("started checker_loop");
+            while let Ok(req) = checker_rx.recv().await {
+                println!("checker recv: {:?}", req.0);
+                respond(req, |_| None)
+            }
+        }).detach();
+
+        let checker0 = checkers_reg.reg(0);
         spawn(async move {
             println!("started checker0_loop");
             while let Ok(req) = checker0.recv().await {
@@ -150,7 +144,21 @@ impl Factroy {
             }
         }).detach();
 
-        let deriver0 = self.derivers_reg.reg(0);
+        spawn(async move {
+            println!("started check_result_loop");
+            while let Ok(check_result) = check_result_rx.recv().await {
+                println!("check result: {:?}", check_result);
+            }
+        }).detach();
+
+        spawn(async move {
+            println!("started raw_output_loop");
+            while let Ok(raw_output) = raw_output_rx.recv().await {
+                println!("raw output: {:?}", raw_output);
+            }
+        }).detach();
+
+        let deriver0 = derivers_reg.reg(0);
         spawn(async move {
             println!("started deriver0_loop");
             while let Ok(req) = deriver0.recv().await {
@@ -158,11 +166,29 @@ impl Factroy {
                 respond(req, |_| DerivedAtom);
             }
         }).detach();
+
+        spawn(async move {
+            println!("started derived_output_loop");
+            while let Ok(derived_output) = derived_output_rx.recv().await {
+                println!("derived output: {:?}", derived_output);
+            }
+        }).detach();
+
+        Factroy {
+            input_rx,
+            checker_tx,
+            checkers_reg,
+            check_result_tx,
+            raw_output_tx,
+            derivers_reg,
+            derived_output_tx,
+        }
     }
 
     async fn exec(self) {
+        println!("start to process");
         while let Ok(input) = self.input_rx.recv().await {
-            println!("recv input {:?}", input);
+            println!("recv input: {:?}", input);
             let WithDealNo { deal, data } = input;
             let check_result_all = send_recv(&self.checker_tx, data.clone()).await;
             let check_result_parts = self.checkers_reg.send_recv_ordered(data.clone()).await;
@@ -176,59 +202,6 @@ impl Factroy {
     }
 }
 
-impl InitPorts {
-    async fn debug(self) {
-        spawn(async move {
-            println!("started input_endpoint_loop");
-            let mut deal = 0;
-            loop {
-                let data = vec![WithPartNo { part: 0, data: RawAtom }];
-                let raw_data = WithDealNo { deal, data };
-                println!("input: {:?}", raw_data);
-                self.input_tx.send(raw_data).await.unwrap();
-                deal += 1;
-                Timer::after(Duration::from_secs(5)).await;
-            }
-        }).detach();
-
-        spawn(async move {
-            println!("started checker_loop");
-            while let Ok(req) = self.checker_rx.recv().await {
-                println!("checker recv: {:?}", req.0);
-                respond(req, |_| None)
-            }
-        }).detach();
-
-        spawn(async move {
-            println!("started check_result_loop");
-            while let Ok(check_result) = self.check_result_rx.recv().await {
-                println!("check result: {:?}", check_result);
-            }
-        }).detach();
-
-        spawn(async move {
-            println!("started raw_output_loop");
-            while let Ok(raw_output) = self.raw_output_rx.recv().await {
-                println!("raw output: {:?}", raw_output);
-            }
-        }).detach();
-
-        spawn(async move {
-            println!("started derived_output_loop");
-            while let Ok(derived_output) = self.derived_output_rx.recv().await {
-                println!("derived output: {:?}", derived_output);
-            }
-        }).detach();
-    }
-}
-
 fn main() {
-    block_on(async {
-        println!("started main_loop");
-        let (mut factory, ports) = Factroy::new();
-        ports.debug().await;
-        println!("start to process");
-        factory.reg().await;
-        factory.exec().await;
-    });
+    block_on(Factroy::new().exec());
 }
