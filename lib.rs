@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use std::{collections::BTreeMap, time::Duration, future::Future};
+use std::{collections::btree_map::{BTreeMap, Entry}, time::Duration, future::Future};
 use async_channel::{Sender as Tx, Receiver as Rx, unbounded as channel};
 use async_oneshot::{Sender as OneTx, Receiver as OneRx, oneshot};
 use async_io::Timer;
@@ -40,12 +40,12 @@ type DerivedData = Vec<WithPartNo<DerivedAtom>>;
 struct Factroy {
     input_rx: Rx<WithDealNo<RawData>>,
     checker_tx: Tx<(RawData, OneTx<CheckResult>)>,
-    checkers: BTreeMap<PartNo, Tx<(RawAtom, Tx<CheckResult>)>>,
+    checkers: CheckersReg,
     check_result_tx: Tx<WithDealNo<CheckResult>>,
     raw_output_tx: Tx<WithDealNo<RawData>>,
     all_deriver_tx: Tx<(RawData, OneTx<DerivedData>)>,
-    derivers: BTreeMap<PartNo, Tx<(RawAtom, Tx<DerivedAtom>)>>,
-    derived_output_tx: Tx<WithDealNo<DerivedData>>
+    derivers: DeriversReg,
+    derived_output_tx: Tx<WithDealNo<DerivedData>>,
 }
 
 struct InitPorts {
@@ -55,6 +55,59 @@ struct InitPorts {
     check_result_rx: Rx<WithDealNo<CheckResult>>,
     raw_output_rx: Rx<WithDealNo<RawData>>,
     derived_output_rx: Rx<WithDealNo<DerivedData>>,
+}
+
+struct CheckersReg {
+    tx: BTreeMap<PartNo, Tx<(RawAtom, OneTx<CheckResult>)>>,
+}
+
+impl CheckersReg {
+    fn new() -> CheckersReg {
+        CheckersReg { tx: BTreeMap::new() }
+    }
+
+    fn spawn_checker(&mut self, part: PartNo) -> Option<Rx<(RawAtom, OneTx<CheckResult>)>> {
+        match self.tx.entry(part) {
+            Entry::Vacant(entry) => {
+                let (tx, rx) = channel();
+                entry.insert(tx);
+                Some(rx)
+            },
+            Entry::Occupied(_) => None,
+        }
+    }
+
+    async fn send_recv(&self, raw: RawData) -> Vec<WithPartNo<CheckResult>> {
+        let mut res = Vec::with_capacity(raw.len());
+        for WithPartNo { part, data } in raw {
+            let tx = self.tx.get(&part).unwrap();
+            let (res_tx, res_rx) = oneshot();
+            tx.send((data, res_tx)).await.unwrap();
+            res.push(WithPartNo { part, data: res_rx.await.unwrap() });
+        }
+        res
+    }
+}
+
+struct DeriversReg {
+    tx: BTreeMap<PartNo, Tx<(RawAtom, OneTx<DerivedAtom>)>>,
+}
+
+impl DeriversReg {
+    fn new() -> DeriversReg {
+        DeriversReg { tx: BTreeMap::new() }
+    }
+
+    fn spawn_deriver(&mut self, part: PartNo) -> Option<Rx<(RawAtom, OneTx<DerivedAtom>)>> {
+        match self.tx.entry(part) {
+            Entry::Vacant(entry) => {
+                let (tx, rx) = channel();
+                entry.insert(tx);
+                Some(rx)
+            },
+            Entry::Occupied(_) => None,
+        }
+    }
 }
 
 impl Factroy {
@@ -70,11 +123,11 @@ impl Factroy {
             Factroy {
                 input_rx,
                 checker_tx,
-                checkers: BTreeMap::new(),
+                checkers: CheckersReg::new(),
                 check_result_tx,
                 raw_output_tx,
                 all_deriver_tx,
-                derivers: BTreeMap::new(),
+                derivers: DeriversReg::new(),
                 derived_output_tx,
             },
             InitPorts {
