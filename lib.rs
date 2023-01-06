@@ -68,7 +68,6 @@ struct Factroy {
     checkers_reg: Reg<CheckResult>,
     check_result_tx: Tx<WithDealNo<Option<CombinedCheckError>>>,
     raw_output_tx: Tx<WithDealNo<RawData>>,
-    all_deriver_tx: Tx<(RawData, OneTx<DerivedData>)>,
     derivers_reg: Reg<DerivedAtom>,
     derived_output_tx: Tx<WithDealNo<DerivedData>>,
 }
@@ -76,7 +75,6 @@ struct Factroy {
 struct InitPorts {
     input_tx: Tx<WithDealNo<RawData>>,
     checker_rx: Rx<(RawData, OneTx<CheckResult>)>,
-    all_deriver_rx: Rx<(RawData, OneTx<DerivedData>)>,
     check_result_rx: Rx<WithDealNo<Option<CombinedCheckError>>>,
     raw_output_rx: Rx<WithDealNo<RawData>>,
     derived_output_rx: Rx<WithDealNo<DerivedData>>,
@@ -117,7 +115,6 @@ impl Factroy {
         let (checker_tx, checker_rx) = channel();
         let (check_result_tx, check_result_rx) = channel();
         let (raw_output_tx, raw_output_rx) = channel();
-        let (all_deriver_tx, all_deriver_rx) = channel();
         let (derived_output_tx, derived_output_rx) = channel();
 
         let checkers_reg = Reg::new();
@@ -130,7 +127,6 @@ impl Factroy {
                 checkers_reg,
                 check_result_tx,
                 raw_output_tx,
-                all_deriver_tx,
                 derivers_reg,
                 derived_output_tx,
             },
@@ -139,7 +135,6 @@ impl Factroy {
                 checker_rx,
                 check_result_rx,
                 raw_output_rx,
-                all_deriver_rx,
                 derived_output_rx,
             },
         )
@@ -175,7 +170,6 @@ impl Factroy {
             self.check_result_tx.send(WithDealNo { deal, data: check_result.clone() }).await.unwrap();
             if let Some(_) = check_result { continue; }
             self.raw_output_tx.send(WithDealNo { deal, data: data.clone() }).await.unwrap();
-            let _derived = send_recv(&self.all_deriver_tx, data.clone()).await;
             let derived = self.derivers_reg.send_recv_ordered(data.clone()).await;
             self.derived_output_tx.send(WithDealNo { deal, data: derived }).await.unwrap();
         }
@@ -202,14 +196,6 @@ impl InitPorts {
             while let Ok(req) = self.checker_rx.recv().await {
                 println!("checker recv: {:?}", req.0);
                 respond(req, |_| None)
-            }
-        }).detach();
-
-        spawn(async move {
-            println!("started all_deriver_loop");
-            while let Ok(req) = self.all_deriver_rx.recv().await {
-                println!("all deriver recv: {:?}", req.0);
-                respond(req, |_| vec![WithPartNo { part: 0, data: DerivedAtom }]);
             }
         }).detach();
 
