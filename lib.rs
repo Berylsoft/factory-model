@@ -60,7 +60,7 @@ fn main() {
             derive_output: derived_output_tx,
         };
 
-        let _ = spawn(async move {
+        spawn(async move {
             println!("started input_endpoint_loop");
             let mut deal = 0;
             loop {
@@ -71,46 +71,46 @@ fn main() {
                 deal += 1;
                 Timer::after(Duration::from_secs(5)).await;
             }
-        });
+        }).detach();
 
-        let _ = spawn(async move {
+        spawn(async move {
             println!("started checker_loop");
             while let Ok((data, mut res_tx)) = checker_rx.recv().await {
                 println!("checker recv: {:?}", data);
                 let res = CheckResult::Ok;
                 res_tx.send(res).unwrap();
             }
-        });
+        }).detach();
 
-        let _ = spawn(async move {
+        spawn(async move {
             println!("started all_deriver_loop");
             while let Ok((data, mut res_tx)) = all_deriver_rx.recv().await {
                 println!("all deriver recv: {:?}", data);
                 let res = vec![(0, DerivedAtom)];
                 res_tx.send(res).unwrap();
             }
-        });
+        }).detach();
 
-        let _ = spawn(async move {
+        spawn(async move {
             println!("started check_result_loop");
             while let Ok(check_result) = check_result_rx.recv().await {
                 println!("check result: {:?}", check_result);
             }
-        });
+        }).detach();
 
-        let _ = spawn(async move {
+        spawn(async move {
             println!("started raw_output_loop");
             while let Ok(raw_output) = raw_output_rx.recv().await {
                 println!("raw output: {:?}", raw_output);
             }
-        });
+        }).detach();
 
-        let _ = spawn(async move {
+        spawn(async move {
             println!("started derived_output_loop");
             while let Ok(derived_output) = derived_output_rx.recv().await {
                 println!("derived output: {:?}", derived_output);
             }
-        });
+        }).detach();
 
         println!("start to process");
         while let Ok(input) = _self.input.recv().await {
