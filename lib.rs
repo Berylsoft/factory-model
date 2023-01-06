@@ -18,12 +18,15 @@ fn respond<Req, Res>((req, mut res_tx): (Req, OneTx<Res>), responder: fn(Req) ->
 
 type DealNo = u64;
 type PartNo = u64;
+type AttrNo = u64;
 
 #[derive(Debug, Clone)]
-struct RawAtom;
+struct RawLepton;
+type RawAtom = Vec<WithAttrNo<RawLepton>>;
 
 #[derive(Debug, Clone)]
-struct DerivedAtom;
+struct DerivedLepton;
+type DerivedAtom = Vec<WithAttrNo<DerivedLepton>>;
 
 #[derive(Debug, Clone)]
 struct WithDealNo<T> {
@@ -34,6 +37,12 @@ struct WithDealNo<T> {
 #[derive(Debug, Clone)]
 struct WithPartNo<T> {
     part: PartNo,
+    data: T,
+}
+
+#[derive(Debug, Clone)]
+struct WithAttrNo<T> {
+    attr: AttrNo,
     data: T,
 }
 
@@ -118,7 +127,7 @@ impl Factroy {
             println!("started input_endpoint_loop");
             let mut deal = 0;
             loop {
-                let data = vec![WithPartNo { part: 0, data: RawAtom }];
+                let data = vec![WithPartNo { part: 0, data: vec![WithAttrNo { attr: 0, data: RawLepton }] }];
                 let raw_data = WithDealNo { deal, data };
                 println!("input: {:?}", raw_data);
                 input_tx.send(raw_data).await.unwrap();
@@ -163,7 +172,7 @@ impl Factroy {
             println!("started deriver0_loop");
             while let Ok(req) = deriver0.recv().await {
                 println!("deriver0 recv: {:?}", req.0);
-                respond(req, |_| DerivedAtom);
+                respond(req, |_| vec![WithAttrNo { attr: 0, data: DerivedLepton }]);
             }
         }).detach();
 
