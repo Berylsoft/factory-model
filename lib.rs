@@ -40,11 +40,11 @@ type DerivedData = Vec<WithPartNo<DerivedAtom>>;
 struct Factroy {
     input_rx: Rx<WithDealNo<RawData>>,
     checker_tx: Tx<(RawData, OneTx<CheckResult>)>,
-    checkers: CheckersReg,
+    checkers: Reg<CheckResult>,
     check_result_tx: Tx<WithDealNo<CheckResult>>,
     raw_output_tx: Tx<WithDealNo<RawData>>,
     all_deriver_tx: Tx<(RawData, OneTx<DerivedData>)>,
-    derivers: DeriversReg,
+    derivers: Reg<DerivedAtom>,
     derived_output_tx: Tx<WithDealNo<DerivedData>>,
 }
 
@@ -57,16 +57,16 @@ struct InitPorts {
     derived_output_rx: Rx<WithDealNo<DerivedData>>,
 }
 
-struct CheckersReg {
-    tx: BTreeMap<PartNo, Tx<(RawAtom, OneTx<CheckResult>)>>,
+struct Reg<T> {
+    tx: BTreeMap<PartNo, Tx<(RawAtom, OneTx<T>)>>,
 }
 
-impl CheckersReg {
-    fn new() -> CheckersReg {
-        CheckersReg { tx: BTreeMap::new() }
+impl<T> Reg<T> {
+    fn new() -> Reg<T> {
+        Reg { tx: BTreeMap::new() }
     }
 
-    fn spawn_checker(&mut self, part: PartNo) -> Option<Rx<(RawAtom, OneTx<CheckResult>)>> {
+    fn spawn_checker(&mut self, part: PartNo) -> Option<Rx<(RawAtom, OneTx<T>)>> {
         match self.tx.entry(part) {
             Entry::Vacant(entry) => {
                 let (tx, rx) = channel();
@@ -77,7 +77,7 @@ impl CheckersReg {
         }
     }
 
-    async fn send_recv(&self, raw: RawData) -> Vec<WithPartNo<CheckResult>> {
+    async fn send_recv(&self, raw: RawData) -> Vec<WithPartNo<T>> {
         let mut res = Vec::with_capacity(raw.len());
         for WithPartNo { part, data } in raw {
             let tx = self.tx.get(&part).unwrap();
@@ -86,27 +86,6 @@ impl CheckersReg {
             res.push(WithPartNo { part, data: res_rx.await.unwrap() });
         }
         res
-    }
-}
-
-struct DeriversReg {
-    tx: BTreeMap<PartNo, Tx<(RawAtom, OneTx<DerivedAtom>)>>,
-}
-
-impl DeriversReg {
-    fn new() -> DeriversReg {
-        DeriversReg { tx: BTreeMap::new() }
-    }
-
-    fn spawn_deriver(&mut self, part: PartNo) -> Option<Rx<(RawAtom, OneTx<DerivedAtom>)>> {
-        match self.tx.entry(part) {
-            Entry::Vacant(entry) => {
-                let (tx, rx) = channel();
-                entry.insert(tx);
-                Some(rx)
-            },
-            Entry::Occupied(_) => None,
-        }
     }
 }
 
@@ -123,11 +102,11 @@ impl Factroy {
             Factroy {
                 input_rx,
                 checker_tx,
-                checkers: CheckersReg::new(),
+                checkers: Reg::new(),
                 check_result_tx,
                 raw_output_tx,
                 all_deriver_tx,
-                derivers: DeriversReg::new(),
+                derivers: Reg::new(),
                 derived_output_tx,
             },
             InitPorts {
