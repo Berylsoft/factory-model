@@ -1,16 +1,17 @@
 [package]
-name = "factory"
+name = "factory-model"
 version = "0.0.1"
 edition = "2021"
 authors = ["stackinspector"]
 license = "MPL-2.0"
+repository = "https://github.com/Berylsoft/factory-model"
 
 [[bin]]
-name = "factory"
+name = "factory-model"
 path = "lib.rs"
 
 [dependencies]
-foundations = { path = "../../Berylsoft/foundations", default-features = false, features = [] }
+foundations = { path = "../foundations", default-features = false, features = [] }
 async-channel = "1"
 async-oneshot = "0.5"
 async-io = "1"
